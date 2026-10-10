@@ -28,7 +28,7 @@ tasks:
     cmds:
       - cargo test
       - node --test web/*.test.mjs
-      - cd tools && python3 -m unittest test_harvest test_boxart test_look
+      - cd tools && python3 -m unittest test_harvest test_scrape test_look
 
   check:
     desc: Formatting, clippy for both targets, and the tests
@@ -38,7 +38,7 @@ tasks:
       - cargo clippy --lib --target wasm32-unknown-unknown -- -D warnings
       - cargo test
       - node --test web/*.test.mjs
-      - cd tools && python3 -m unittest test_harvest test_boxart test_look
+      - cd tools && python3 -m unittest test_harvest test_scrape test_look
 
   slot:pin-check:
     desc: Say whether ../slot's cart face still matches the commit in slot.ref
@@ -71,10 +71,10 @@ tasks:
     cmds:
       - python3 tools/serve-art.py {{.ART | default "~/CartStudioArt"}} 8766
 
-  boxart:
-    desc: 'Put ScreenScraper 3D box art on a card: task boxart CARD=/Volumes/SLOT -- --replace'
+  scrape:
+    desc: 'ScreenScraper 3D box, 2D box and label for the roms in a folder: task scrape DIR=/Volumes/SLOT -- --replace'
     cmds:
-      - python3 tools/boxart.py --card {{.CARD}} {{.CLI_ARGS}}
+      - python3 tools/scrape.py {{.DIR}} {{.CLI_ARGS}}
 
   verify:
     desc: Open ../slot/sdcard in headless Chrome, screenshot the studio and download its zip into out/

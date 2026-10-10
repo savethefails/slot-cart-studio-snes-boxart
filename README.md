@@ -19,18 +19,32 @@ and `Games/SNES` it writes:
 
 Roms are matched by checksum against No-Intro. SNES dumps with a 512-byte copier header match too.
 
-## 3D box art
+## Box art and labels from ScreenScraper, locally
 
-3D boxes are only on ScreenScraper, which a browser can't query, so a local script fetches them
-instead. You'll need a [ScreenScraper](https://www.screenscraper.fr/) account (developer id and
-password plus your user login), and the script respects the account's quota:
+ScreenScraper has 3D boxes, 2D boxes and scans of real cart labels, but a browser can't query
+it, so `tools/scrape.py` does it on your machine instead. Point it at a folder: a card's root,
+one system's folder like `Games/SNES`, or any folder of roms. Only the roms in that folder are
+looked up, at one API call each:
 
     SS_DEVID=... SS_DEVPASSWORD=... SS_SSID=... SS_SSPASSWORD=... \
-        python3 tools/boxart.py --card /Volumes/SLOT --replace
+        python3 tools/scrape.py /Volumes/SLOT
 
-`--replace` writes over the 2D boxes the studio wrote. Leave it off to fill only the carts that
-have no box art yet. `--media box-2D` fetches ScreenScraper's flat fronts, and `--platform SNES`
-limits the run to one system.
+| Kind | Written to |
+| --- | --- |
+| 3D box | `Images/<SYSTEM>/<rom name>.png`, which ezGBA shows above the shelf |
+| 2D box | `Images/<SYSTEM>/2dboxart/<rom name>.png` |
+| Label scan | `Labels/<SYSTEM>/<rom name>.png` |
+
+- **No 3D box:** the 2D box goes in `Images/<SYSTEM>/` instead.
+- **Files already there** are kept. Pass `--replace` to fetch again and write over them.
+- **Other options:**
+  - `--only box-3D,label` limits the kinds.
+  - `--platform SNES` limits the systems.
+  - `--out DIR` writes somewhere other than the folder itself.
+  - `--dry-run` lists what would be fetched without spending quota.
+- **Account:** you need a [ScreenScraper](https://www.screenscraper.fr/) developer id and
+  password, plus your own user login. The script stays inside that account's daily quota, and
+  a later run carries on from where it stopped.
 
 ## Building
 
