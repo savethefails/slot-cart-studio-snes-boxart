@@ -58,7 +58,8 @@ export function fillText({ unlabelled }) {
     : { title: `${unlabelled} carts have no label yet`, question: 'How should the studio fill them?' };
 }
 
-export function autoFill({ real, logo }) {
-  if (real > 0 && logo > 0) return null;
+// A real label scan wins whenever the card has one anywhere: a cart without a scan of its own
+// falls back to its logo label (see `wears`), so the question is never worth asking.
+export function autoFill({ real }) {
   return real > 0 ? 'real' : 'logo';
 }

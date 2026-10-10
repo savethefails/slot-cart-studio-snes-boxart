@@ -1,5 +1,5 @@
-//! slot-store as slot's cart face sees it, with the Game Boy header reads swapped. Those open the
-//! rom, which a browser cannot do, so these answer from header bytes the page read.
+//! slot-store as slot's cart face sees it, with the Game Boy and SNES header reads swapped. Those
+//! open the rom, which a browser cannot do, so these answer from header bytes the page read.
 
 pub use ::slot_store_real::*;
 
@@ -23,6 +23,14 @@ pub mod gb {
         out
     }
 
+    /// The stashed header bytes while `rom` is the stash key, for `snes` to read too.
+    pub(crate) fn stashed_bytes(rom: &Path) -> Option<Vec<u8>> {
+        if rom != Path::new(KEY) {
+            return None;
+        }
+        HEAD.with(|s| s.borrow().clone())
+    }
+
     fn stashed(rom: &Path) -> Option<Option<Header>> {
         if rom != Path::new(KEY) {
             return None;
@@ -39,6 +47,21 @@ pub mod gb {
         match stashed(rom) {
             Some(h) => h.map_or(Class::Original, |h| h.class()),
             None => ::slot_store_real::gb::class(rom),
+        }
+    }
+}
+
+/// A SNES cart's stash is the 32-byte internal header the page found, or nothing.
+pub mod snes {
+    use std::path::Path;
+
+    pub use ::slot_store_real::snes::*;
+
+    /// Slot's signature; any path but the stash key is slot's own read.
+    pub fn header(rom: &Path) -> Option<Header> {
+        match crate::gb::stashed_bytes(rom) {
+            Some(bytes) => parse(&bytes),
+            None => ::slot_store_real::snes::header(rom),
         }
     }
 }

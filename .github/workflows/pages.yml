@@ -1,7 +1,8 @@
 name: pages
 
 # The page is static, but its WASM is built from this crate and from four of slot's own source
-# files, which is why slot is checked out beside it at the commit slot.ref names.
+# files, which is why slot is checked out beside it at the commit slot.ref names. The slot here is
+# ezGBA, the fork this studio's cards are for, which adds SNES and box art.
 on:
   push:
     branches: [main]
@@ -36,7 +37,7 @@ jobs:
       # Beside the studio, as the two sit on a desk, so ../slot means the same thing here.
       - uses: actions/checkout@v7
         with:
-          repository: BrandonKowalski/slot
+          repository: savethefails/ezGBA-640x480
           ref: ${{ steps.pin.outputs.ref }}
           path: slot
 

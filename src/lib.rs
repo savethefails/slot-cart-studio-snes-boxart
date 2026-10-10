@@ -42,8 +42,9 @@ pub fn cart_size(platform: &str) -> Vec<u32> {
 }
 
 /// A label the card already has, on its cart. `platform` is the card folder the rom sits in,
-/// `GBA`, `GB` or `GBC`, which is how the page names a platform either side of the wasm boundary.
-/// `head` is a Game Boy rom's first 0x150 bytes, which pick its pak; a GBA cart passes none.
+/// `GBA`, `GB`, `GBC` or `SNES`, which is how the page names a platform either side of the wasm boundary.
+/// `head` is a Game Boy rom's first 0x150 bytes or a SNES rom's internal header, which pick its
+/// pak's plastic; a GBA cart passes none.
 /// `shell` is the cart's value, empty for Automatic.
 #[wasm_bindgen]
 pub fn existing_face(
@@ -109,6 +110,23 @@ impl JsDat {
 #[wasm_bindgen]
 pub fn header_code(head: &[u8]) -> String {
     rom::header_code(head)
+}
+
+/// A SNES rom's internal header, from its first `SNES_HEAD_READ` bytes and its full length.
+#[wasm_bindgen]
+pub fn snes_head(head: &[u8], len: f64) -> Vec<u8> {
+    rom::snes_head(head, len as u64)
+}
+
+#[wasm_bindgen]
+pub fn snes_head_read() -> usize {
+    rom::SNES_HEAD_READ
+}
+
+/// How many leading bytes of a rom No-Intro's CRC leaves out.
+#[wasm_bindgen]
+pub fn crc_skip(platform: &str, len: f64) -> f64 {
+    rom::crc_skip(platform, len as u64) as f64
 }
 
 #[wasm_bindgen]

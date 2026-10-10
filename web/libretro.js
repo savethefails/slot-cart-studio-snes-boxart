@@ -13,6 +13,7 @@ const NAMES = {
   GBA: 'Nintendo - Game Boy Advance',
   GB: 'Nintendo - Game Boy',
   GBC: 'Nintendo - Game Boy Color',
+  SNES: 'Nintendo - Super Nintendo Entertainment System',
 };
 
 export async function fetchDat(platform) {
@@ -21,7 +22,7 @@ export async function fetchDat(platform) {
   return r.text();
 }
 
-// A card can hold hundreds of carts, each wanting two images, and GitHub is not a CDN.
+// A card can hold hundreds of carts, each wanting a few images, and GitHub is not a CDN.
 export function limiter(slots) {
   let running = 0;
   const waiting = [];

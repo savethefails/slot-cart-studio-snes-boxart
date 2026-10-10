@@ -175,3 +175,78 @@ test('a folder the browser listed as empty says it could not be read', () => {
 test('a folder with files but no games is still not a slot card', () => {
   assert.throws(() => fromFiles(listed({ Photos: { 'a.jpg': '' } })), /doesn’t look like a slot SD card/);
 });
+
+// A card the studio can write to, in memory: every file a string or bytes under its path.
+const writableCard = (tree) => {
+  const dir = (node) => ({
+    kind: 'directory',
+    async getDirectoryHandle(name, { create } = {}) {
+      if (typeof node[name] !== 'object') {
+        if (!create) throw notFound();
+        node[name] = {};
+      }
+      return dir(node[name]);
+    },
+    async getFileHandle(name, { create } = {}) {
+      if (!(name in node)) {
+        if (!create) throw notFound();
+        node[name] = '';
+      }
+      return {
+        kind: 'file',
+        getFile: async () => new File([node[name]], name),
+        async createWritable() {
+          return { write: async (b) => (node[name] = b), close: async () => {}, abort: async () => {} };
+        },
+      };
+    },
+    async removeEntry(name) {
+      delete node[name];
+    },
+    async *entries() {
+      for (const [name, value] of Object.entries(node)) {
+        yield [name, typeof value === 'object' ? dir(value) : fileHandle(value)];
+      }
+    },
+  });
+  return dir(tree);
+};
+
+test('SNES roms are carts in their own folder, after the Game Boy ones', async () => {
+  const tree = {
+    Games: {
+      SNES: { 'Zelda.sfc': '', 'Mario.smc': '', 'Wrong.gba': '' },
+      GB: { 'Tetris.gb': '' },
+      GBA: { 'A.gba': '' },
+    },
+  };
+  for (const source of [await fromDirectory(dirHandle(tree)), fromFiles(listed(tree))]) {
+    assert.deepEqual(
+      source.carts.map((c) => `${c.platform}/${c.stem}`),
+      ['GBA/A', 'GB/Tetris', 'SNES/Mario', 'SNES/Zelda'],
+    );
+  }
+});
+
+test('box art already in Images is listed by platform and stem', async () => {
+  const tree = { ...GAMES, Images: { GBA: { 'A.png': 'box', '._A.png': '' }, SNES: { 'Zelda.png': 'z' } } };
+  for (const source of [await fromDirectory(dirHandle(tree)), fromFiles(listed(tree))]) {
+    assert.deepEqual([...source.images.keys()], ['GBA/A', 'SNES/Zelda']);
+  }
+});
+
+test('box art is written to Images and never over art already there', async () => {
+  const tree = { ...GAMES, Images: { GBA: { 'Kept.png': 'mine' } } };
+  const source = await fromDirectory(writableCard(tree));
+  assert.equal(await source.writeImage('SNES', 'Zelda', 'z'), 'written');
+  assert.equal(await source.writeImage('GBA', 'Kept', 'theirs'), 'skipped');
+  assert.deepEqual(tree.Images, { GBA: { 'Kept.png': 'mine' }, SNES: { 'Zelda.png': 'z' } });
+});
+
+test('a listed card carries its Images folder into the zip too', async () => {
+  const source = fromFiles(listed({ ...GAMES, Images: { GBA: { 'A.png': 'box' } } }));
+  assert.deepEqual(
+    source.labelFiles.map((f) => f.path),
+    ['Images/GBA/A.png'],
+  );
+});

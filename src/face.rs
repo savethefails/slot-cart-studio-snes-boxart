@@ -13,6 +13,7 @@ pub fn platform_of(dir: &str) -> Platform {
     match dir {
         "GB" => Platform::Gb,
         "GBC" => Platform::Gbc,
+        "SNES" => Platform::Snes,
         _ => Platform::Gba,
     }
 }
@@ -35,6 +36,7 @@ fn draw(
             stem: stem.to_string(),
             rom: rom.to_path_buf(),
             label: Some(key.to_path_buf()),
+            box_art: None,
             title: String::new(),
             code: code.to_string(),
             shell: slot_store::ShellChoice::parse(shell),

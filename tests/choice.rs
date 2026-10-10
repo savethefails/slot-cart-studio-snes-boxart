@@ -91,6 +91,15 @@ fn a_stem_the_file_cannot_key_is_refused() {
     .is_err());
 }
 
+/// A LoROM dump whose internal header names Killer Instinct, which slot draws in black.
+fn killer_instinct() -> Vec<u8> {
+    let mut rom = vec![0u8; 0x8000];
+    rom[0x7fc0..0x7fc0 + 21].copy_from_slice(b"KILLER INSTINCT      ");
+    rom[0x7fdc..0x7fde].copy_from_slice(&0x1234u16.to_le_bytes());
+    rom[0x7fde..0x7fe0].copy_from_slice(&(0x1234u16 ^ 0xffff).to_le_bytes());
+    rom
+}
+
 #[test]
 fn automatic_is_what_slot_would_draw_and_presets_are_values() {
     let mut head = vec![0u8; 0x150];
@@ -105,8 +114,19 @@ fn automatic_is_what_slot_would_draw_and_presets_are_values() {
         choice::auto_shell(slot_store::Platform::Gba, "AMTE", &[]),
         "auto 35353a solid"
     );
+    let mut snes = slot_cart_studio::rom::snes_head(&killer_instinct(), 0x8000);
+    assert_eq!(
+        choice::auto_shell(slot_store::Platform::Snes, "", &snes),
+        "auto 2c2b2e solid"
+    );
+    snes.clear();
+    assert_eq!(
+        choice::auto_shell(slot_store::Platform::Snes, "", &snes),
+        "auto 8a878e solid"
+    );
     let presets = choice::presets();
-    assert_eq!(presets.len(), 25);
+    // Upstream slot's 25, and the SNES grey and Killer Instinct black.
+    assert_eq!(presets.len(), 27);
     for p in presets {
         let (_, value) = p.split_once('\t').expect("name\\tvalue");
         assert!(slot_store::ShellChoice::parse(value).is_some(), "{value}");

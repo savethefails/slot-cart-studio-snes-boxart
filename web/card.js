@@ -2,15 +2,15 @@
 // be written to. Everything else hands over a flat list of files with their paths, which can only
 // be read, so the labels leave as a zip instead.
 
-// slot files a cart under the folder its platform names, in Games/, Labels/, Saves/ and States/
-// alike, and the folder is what decides the platform: the rom is never opened to ask.
-// Listed newest first, which is the order the studio's shelves and tabs run in.
-export const PLATFORMS = ['GBA', 'GBC', 'GB'];
+// slot files a cart under the folder its platform names, in Games/, Labels/, Images/, Saves/ and
+// States/ alike, and the folder is what decides the platform: the rom is never opened to ask.
+// The studio's shelves and tabs run in this order.
+export const PLATFORMS = ['GBA', 'GBC', 'GB', 'SNES'];
 
 // slot's own rule, from slot-store's platform.rs. A .gba under GB/ is not a Game Boy cart and is
 // passed over in silence, the way slot passes over it.
-const EXTENSIONS = { GBA: ['gba'], GB: ['gb', 'gbc'], GBC: ['gb', 'gbc'] };
-const ANY_ROM = ['gba', 'gb', 'gbc'];
+const EXTENSIONS = { GBA: ['gba'], GB: ['gb', 'gbc'], GBC: ['gb', 'gbc'], SNES: ['sfc', 'smc'] };
+const ANY_ROM = ['gba', 'gb', 'gbc', 'sfc', 'smc'];
 
 const named = (dir) => PLATFORMS.find((p) => p === dir.toUpperCase());
 const ext = (name) => name.slice(name.lastIndexOf('.') + 1).toLowerCase();
@@ -19,7 +19,7 @@ const ext = (name) => name.slice(name.lastIndexOf('.') + 1).toLowerCase();
 const visible = (name) => !name.startsWith('.');
 const isCart = (platform, name) => visible(name) && EXTENSIONS[platform].includes(ext(name));
 const isRom = (name) => visible(name) && ANY_ROM.includes(ext(name));
-const isLabel = (name) => visible(name) && ext(name) === 'png';
+const isPng = (name) => visible(name) && ext(name) === 'png';
 const stemOf = (name) => name.slice(0, name.lastIndexOf('.'));
 
 // macOS lists exFAT names decomposed, whatever form was written, so names are compared composed.
@@ -41,7 +41,7 @@ const UNREADABLE =
 const OLD_SHELL_FILE =
   'This browser can’t open cart_shell.ini. Start the latest slot once, then choose the card again.';
 const OLD_LAYOUT =
-  'This card still keeps its roms loose in Games. Start slot once on the device to sweep them into GBA, GB and GBC folders, then choose the card again.';
+  'This card still keeps its roms loose in Games. Start slot once on the device to sweep them into GBA, GB, GBC and SNES folders, then choose the card again.';
 
 export async function fromDirectory(root) {
   let games;
@@ -70,21 +70,59 @@ export async function fromDirectory(root) {
   // and slot does that sweep itself on the device rather than the studio doing it over the wire.
   if (!sawPlatform && loose) throw new Error(OLD_LAYOUT);
 
-  const labels = new Map();
-  try {
-    const dir = await root.getDirectoryHandle('Labels');
-    for await (const [name, handle] of dir.entries()) {
-      const platform = handle.kind === 'directory' ? named(name) : null;
-      if (!platform) continue;
-      for await (const [file, fh] of handle.entries()) {
-        if (fh.kind === 'file' && isLabel(file)) {
-          labels.set(labelKey(platform, stemOf(file)), () => fh.getFile());
+  // The PNGs a top folder holds per platform: labels in Labels/, box art in Images/.
+  const pngs = async (top) => {
+    const found = new Map();
+    try {
+      const dir = await root.getDirectoryHandle(top);
+      for await (const [name, handle] of dir.entries()) {
+        const platform = handle.kind === 'directory' ? named(name) : null;
+        if (!platform) continue;
+        for await (const [file, fh] of handle.entries()) {
+          if (fh.kind === 'file' && isPng(file)) {
+            found.set(labelKey(platform, stemOf(file)), () => fh.getFile());
+          }
         }
       }
+    } catch {
+      // No such folder yet: every cart needs one.
     }
-  } catch {
-    // No Labels folder yet: every cart needs a label.
-  }
+    return found;
+  };
+  const labels = await pngs('Labels');
+  const images = await pngs('Images');
+
+  // One PNG into <top>/<platform>/<stem>.png. One already on the card is skipped unless `replace`
+  // says to write over it.
+  const writeFile = async (top, platform, stem, bytes, replace) => {
+    const root_dir = await root.getDirectoryHandle(top, { create: true });
+    const dir = await root_dir.getDirectoryHandle(platform, { create: true });
+    const name = `${stem}.png`;
+    let existed = false;
+    try {
+      await dir.getFileHandle(name);
+      existed = true;
+      if (!replace) return 'skipped';
+    } catch (e) {
+      if (e.name !== 'NotFoundError') throw e;
+    }
+    // The file exists from here on, empty until the write closes. A write that fails (a full
+    // card, permission withdrawn, the card pulled) must take it away again: an empty file left
+    // behind reads as one the card already has, so the studio would never make this one.
+    const file = await dir.getFileHandle(name, { create: true });
+    let out = null;
+    try {
+      out = await file.createWritable();
+      await out.write(bytes);
+      await out.close();
+    } catch (e) {
+      await out?.abort().catch(() => {});
+      // A file being replaced is left as it was: the write only lands when it closes.
+      if (!existed) await dir.removeEntry(name).catch(() => {});
+      throw e;
+    }
+    return 'written';
+  };
 
   const shellFile = async (folder) => {
     let dir;
@@ -117,6 +155,7 @@ export async function fromDirectory(root) {
   return {
     carts: carts.sort(byCart),
     labels,
+    images,
     direct: true,
     systemShells,
     labelShells,
@@ -133,35 +172,10 @@ export async function fromDirectory(root) {
       }
     },
     // A label already on the card is skipped unless `replace` says to write over it.
-    async write(platform, stem, bytes, replace = false) {
-      const root_dir = await root.getDirectoryHandle('Labels', { create: true });
-      const dir = await root_dir.getDirectoryHandle(platform, { create: true });
-      const name = `${stem}.png`;
-      let existed = false;
-      try {
-        await dir.getFileHandle(name);
-        existed = true;
-        if (!replace) return 'skipped';
-      } catch (e) {
-        if (e.name !== 'NotFoundError') throw e;
-      }
-      // The file exists from here on, empty until the write closes. A write that fails (a full
-      // card, permission withdrawn, the card pulled) must take it away again: an empty file left
-      // behind reads as a label the card already has, so the studio would never make this one.
-      const file = await dir.getFileHandle(name, { create: true });
-      let out = null;
-      try {
-        out = await file.createWritable();
-        await out.write(bytes);
-        await out.close();
-      } catch (e) {
-        await out?.abort().catch(() => {});
-        // A label being replaced is left as it was: the write only lands when it closes.
-        if (!existed) await dir.removeEntry(name).catch(() => {});
-        throw e;
-      }
-      return 'written';
-    },
+    write: (platform, stem, bytes, replace = false) => writeFile('Labels', platform, stem, bytes, replace),
+    // Box art, where slot looks for it above the shelf. Never written over: art already on the
+    // card is the owner's choice.
+    writeImage: (platform, stem, bytes) => writeFile('Images', platform, stem, bytes, false),
   };
 }
 
@@ -169,14 +183,18 @@ export function fromFiles(files) {
   if (files.length === 0) throw new Error(UNREADABLE);
   const carts = [];
   const labels = new Map();
+  const images = new Map();
   const labelFiles = [];
   let sawPlatform = false;
   let loose = false;
   const shellFiles = {};
   for (const file of files) {
     const parts = file.webkitRelativePath.split('/');
-    if (parts.length >= 3 && parts[1].toLowerCase() === 'labels' && parts.slice(2).every(visible)) {
-      labelFiles.push({ path: ['Labels', ...parts.slice(2)].join('/'), file: async () => file });
+    // Labels and Images both leave in the zip whole, so unzipping it over the card's own
+    // folders loses nothing that was there.
+    const top = { labels: 'Labels', images: 'Images' }[parts[1]?.toLowerCase()];
+    if (parts.length >= 3 && top && parts.slice(2).every(visible)) {
+      labelFiles.push({ path: [top, ...parts.slice(2)].join('/'), file: async () => file });
     }
     // The picked folder, then Games or Labels, then the platform, then the file. Anything
     // shallower is the layout slot swept away; anything deeper is not slot's.
@@ -196,8 +214,10 @@ export function fromFiles(files) {
     if (dir.toLowerCase() === 'games') {
       sawPlatform = true;
       if (isCart(platform, name)) carts.push({ platform, stem: stemOf(name), file: async () => file });
-    } else if (dir.toLowerCase() === 'labels' && isLabel(name)) {
+    } else if (dir.toLowerCase() === 'labels' && isPng(name)) {
       labels.set(labelKey(platform, stemOf(name)), async () => file);
+    } else if (dir.toLowerCase() === 'images' && isPng(name)) {
+      images.set(labelKey(platform, stemOf(name)), async () => file);
     }
   }
   if (!sawPlatform) throw new Error(loose ? OLD_LAYOUT : NO_GAMES);
@@ -208,9 +228,11 @@ export function fromFiles(files) {
   return {
     carts: carts.sort(byCart),
     labels,
+    images,
     labelFiles,
     direct: false,
     write: null,
+    writeImage: null,
     systemShells: () => text(shellFiles.config ?? shellFiles.system),
     labelShells: () => text(shellFiles.labels),
   };

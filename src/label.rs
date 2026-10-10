@@ -12,14 +12,21 @@ pub const H: u32 = 661;
 /// well by covering it, so a wide label on the near-square Game Boy well loses its sides —
 /// Metal Gear Solid read "METAL GEA". The size is chosen so composing one
 /// costs about what a GBA label costs, because this is held in wasm memory a cart at a time.
+/// Taken from slot's well rather than stated, so a change to the pak's well cannot leave labels
+/// composed at the old shape.
 pub const GB_W: u32 = 1024;
-pub const GB_H: u32 = 901;
+pub const GB_H: u32 = GB_W * crate::cart::GB_LABEL_H / crate::cart::GB_LABEL_W;
+
+/// The SNES label, at the SNES well's proportion: wider than a Game Boy's, squarer than a GBA's.
+pub const SNES_W: u32 = 1216;
+pub const SNES_H: u32 = SNES_W * crate::cart::SNES_LABEL_H / crate::cart::SNES_LABEL_W;
 
 /// The label a platform's well wants.
 pub fn size(platform: Platform) -> (u32, u32) {
     match platform {
         Platform::Gba => (W, H),
         Platform::Gb | Platform::Gbc => (GB_W, GB_H),
+        Platform::Snes => (SNES_W, SNES_H),
     }
 }
 
@@ -215,10 +222,10 @@ impl Band {
 /// The part of a label slot shows, as x0, y0, x1, y1. slot covers its well with the label, so a
 /// label of another shape loses rows or columns.
 fn shown(lw: u32, lh: u32) -> (u32, u32, u32, u32) {
-    let (ww, wh) = if (lw, lh) == (W, H) {
-        (crate::cart::LABEL_W, crate::cart::LABEL_H)
-    } else {
-        (crate::cart::GB_LABEL_W, crate::cart::GB_LABEL_H)
+    let (ww, wh) = match (lw, lh) {
+        (W, H) => (crate::cart::LABEL_W, crate::cart::LABEL_H),
+        (SNES_W, SNES_H) => (crate::cart::SNES_LABEL_W, crate::cart::SNES_LABEL_H),
+        _ => (crate::cart::GB_LABEL_W, crate::cart::GB_LABEL_H),
     };
     let well = ww as f32 / wh as f32;
     if lw as f32 / lh as f32 > well {
@@ -593,6 +600,9 @@ mod tests {
         assert_eq!(size(Platform::Gba), (W, H));
         assert_eq!(size(Platform::Gb), (GB_W, GB_H));
         assert_eq!(size(Platform::Gbc), (GB_W, GB_H));
+        assert_eq!(size(Platform::Snes), (SNES_W, SNES_H));
+        let want = crate::cart::SNES_LABEL_W as f32 / crate::cart::SNES_LABEL_H as f32;
+        assert!((SNES_W as f32 / SNES_H as f32 - want).abs() < 0.01);
 
         let want = crate::cart::GB_LABEL_W as f32 / crate::cart::GB_LABEL_H as f32;
         let got = GB_W as f32 / GB_H as f32;
@@ -610,7 +620,11 @@ mod tests {
                 .unwrap();
         }
         let deep = hue::hsl_to_rgb(200.0, 0.65, 0.24);
-        for (platform, want) in [(Platform::Gba, (W, H)), (Platform::Gbc, (GB_W, GB_H))] {
+        for (platform, want) in [
+            (Platform::Gba, (W, H)),
+            (Platform::Gbc, (GB_W, GB_H)),
+            (Platform::Snes, (SNES_W, SNES_H)),
+        ] {
             let label = Label::from_png(&logo, deep, platform, None).expect("logo decodes");
             let reader = png::Decoder::new(std::io::Cursor::new(label.png()))
                 .read_info()
@@ -699,7 +713,11 @@ mod tests {
     #[test]
     fn a_full_label_fills_the_platforms_label_edge_to_edge() {
         let ink = [INK[0], INK[1], INK[2]];
-        for (platform, want) in [(Platform::Gba, (W, H)), (Platform::Gbc, (GB_W, GB_H))] {
+        for (platform, want) in [
+            (Platform::Gba, (W, H)),
+            (Platform::Gbc, (GB_W, GB_H)),
+            (Platform::Snes, (SNES_W, SNES_H)),
+        ] {
             let label =
                 Label::full(&png_of(&solid(600, 290), 600, 290), platform).expect("decodes");
             let (rgb, w, h) = rgb_of(&label.png());

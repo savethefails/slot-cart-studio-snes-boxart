@@ -59,15 +59,16 @@ PLATFORMS = {
     'GBA': 'Nintendo - Game Boy Advance',
     'GB': 'Nintendo - Game Boy',
     'GBC': 'Nintendo - Game Boy Color',
+    'SNES': 'Nintendo - Super Nintendo Entertainment System',
 }
-EXTENSIONS = {'GBA': ('.gba',), 'GB': ('.gb', '.gbc'), 'GBC': ('.gb', '.gbc')}
+EXTENSIONS = {'GBA': ('.gba',), 'GB': ('.gb', '.gbc'), 'GBC': ('.gb', '.gbc'), 'SNES': ('.sfc', '.smc')}
 
 # ScreenScraper's own system ids. They are named "Game Boy Color", not libretro's "Nintendo -
 # Game Boy Color", so there is no shared name to look them up by. Stated here and then checked
 # against the live list at startup: a renumbering upstream would otherwise file one console's art
 # under another's name, silently and for the whole run.
-SS_SYSTEM = {'GB': 9, 'GBC': 10, 'GBA': 12}
-SS_EXPECT = {'GB': 'game boy', 'GBC': 'game boy color', 'GBA': 'game boy advance'}
+SS_SYSTEM = {'GB': 9, 'GBC': 10, 'GBA': 12, 'SNES': 4}
+SS_EXPECT = {'GB': 'game boy', 'GBC': 'game boy color', 'GBA': 'game boy advance', 'SNES': 'super nintendo'}
 
 # Where each media lands, in the layout libretro uses and the studio already fetches.
 # A media's own name is its folder: <platform>/<media type>/<crc>.png. The platform folders are
@@ -203,9 +204,18 @@ def check_systems(c):
     return SS_SYSTEM
 
 
+def crc_skip(path):
+    """No-Intro hashes a SNES dump without the 512-byte copier header some carry in front."""
+    path = Path(path)
+    if path.suffix.lower() in EXTENSIONS['SNES'] and path.stat().st_size % 1024 == 512:
+        return 512
+    return 0
+
+
 def crc32(path):
     h = 0
     with open(path, 'rb') as f:
+        f.seek(crc_skip(path))
         while chunk := f.read(1 << 20):
             h = zlib.crc32(chunk, h)
     return f'{h & 0xffffffff:08X}'

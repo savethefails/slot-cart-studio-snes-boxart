@@ -4,17 +4,18 @@ vars:
   SLOT: ../slot
   # What the studio's faces are made of: the four files compiled in place, slot's art.rs that
   # src/art.rs copies, the assets they include, where `Cart` comes from, gba.rs, whose header
-  # rule src/rom.rs mirrors, gb.rs, whose header the shim answers for, and ini.rs and
+  # rule src/rom.rs mirrors, gb.rs and snes.rs, whose headers the shim answers for, and ini.rs and
   # cart_shell.rs, which the shell choice is read and merged through.
   FACE_PATHS: >-
     crates/slot-ui/src/cart.rs crates/slot-ui/src/shell.rs crates/slot-ui/src/silhouette.rs
     crates/slot-ui/src/text.rs crates/slot-ui/src/art.rs crates/slot-ui/assets/cart.svg
     crates/slot-ui/assets/cart_detail.svg crates/slot-ui/assets/gb_cart.svg
     crates/slot-ui/assets/gb_cart_detail.svg crates/slot-ui/assets/gbc_cart.svg
-    crates/slot-ui/assets/gbc_cart_detail.svg crates/slot-ui/assets/lettering_gb.png
+    crates/slot-ui/assets/gbc_cart_detail.svg crates/slot-ui/assets/snes_cart.svg
+    crates/slot-ui/assets/snes_cart_detail.svg crates/slot-ui/assets/lettering_gb.png
     crates/slot-ui/assets/lettering_gbc.png crates/slot-ui/assets/lettering_gba.png
     crates/slot-ui/assets/label.ttf crates/slot-store/src/scan.rs crates/slot-store/src/gba.rs
-    crates/slot-store/src/gb.rs crates/slot-store/src/ini.rs crates/slot-store/src/cart_shell.rs
+    crates/slot-store/src/gb.rs crates/slot-store/src/snes.rs crates/slot-store/src/ini.rs crates/slot-store/src/cart_shell.rs
 
 tasks:
   default:
@@ -27,6 +28,7 @@ tasks:
     cmds:
       - cargo test
       - node --test web/*.test.mjs
+      - cd tools && python3 -m unittest test_harvest test_boxart test_look
 
   check:
     desc: Formatting, clippy for both targets, and the tests
@@ -36,6 +38,7 @@ tasks:
       - cargo clippy --lib --target wasm32-unknown-unknown -- -D warnings
       - cargo test
       - node --test web/*.test.mjs
+      - cd tools && python3 -m unittest test_harvest test_boxart test_look
 
   slot:pin-check:
     desc: Say whether ../slot's cart face still matches the commit in slot.ref
@@ -67,6 +70,11 @@ tasks:
     desc: 'Serve a harvested set at :8766, for http://127.0.0.1:8765/?art=http://127.0.0.1:8766/'
     cmds:
       - python3 tools/serve-art.py {{.ART | default "~/CartStudioArt"}} 8766
+
+  boxart:
+    desc: 'Put ScreenScraper 3D box art on a card: task boxart CARD=/Volumes/SLOT -- --replace'
+    cmds:
+      - python3 tools/boxart.py --card {{.CARD}} {{.CLI_ARGS}}
 
   verify:
     desc: Open ../slot/sdcard in headless Chrome, screenshot the studio and download its zip into out/

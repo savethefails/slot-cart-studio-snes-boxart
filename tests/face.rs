@@ -41,17 +41,40 @@ fn card(dir: &str, code: &str, (title, gb_code, cgb, japan): Gb, label: &[u8]) -
     d
 }
 
-/// The header bytes the page hands the studio for the only cart on `root`.
+/// A SNES card: a LoROM dump whose internal header names `title`, behind a copier header when
+/// `copier` says so, which is where slot and the studio must both still find it.
+fn snes_card(title: &str, copier: bool, label: &[u8]) -> TempDir {
+    let d = tempfile::tempdir().expect("tempdir");
+    for sub in ["Games", "Labels"] {
+        std::fs::create_dir_all(d.path().join(sub).join("SNES")).expect("content dir");
+    }
+    let skip = if copier { 512 } else { 0 };
+    let mut rom = vec![0u8; skip + 0x8000];
+    let at = skip + 0x7fc0;
+    rom[at..at + 21].fill(b' ');
+    rom[at..at + title.len()].copy_from_slice(title.as_bytes());
+    rom[at + 0x1c..at + 0x1e].copy_from_slice(&0x1234u16.to_le_bytes());
+    rom[at + 0x1e..at + 0x20].copy_from_slice(&(0x1234u16 ^ 0xffff).to_le_bytes());
+    let ext = if copier { "smc" } else { "sfc" };
+    std::fs::write(d.path().join(format!("Games/SNES/{STEM}.{ext}")), rom).expect("rom");
+    std::fs::write(d.path().join(format!("Labels/SNES/{STEM}.png")), label).expect("label");
+    d
+}
+
+/// The header bytes the page hands the studio for the only cart on `root`: a Game Boy rom's first
+/// 0x150, or a SNES rom's internal header as `snes_head` finds it.
 fn head(root: &Path) -> Vec<u8> {
-    let rom = &slot_store::scan(root).expect("scan")[0].rom;
-    std::fs::read(rom).expect("rom")[..0x150].to_vec()
+    let cart = &slot_store::scan(root).expect("scan")[0];
+    let rom = std::fs::read(&cart.rom).expect("rom");
+    if cart.platform == slot_store::Platform::Snes {
+        return slot_cart_studio::rom::snes_head(&rom, rom.len() as u64);
+    }
+    rom[..0x150].to_vec()
 }
 
 /// Slot's face for the only cart on `root`, with the code and stem slot read for it.
 fn slot_face(root: &Path) -> (Vec<u8>, String, String) {
-    let mut cart = slot_store::scan(root).expect("scan").remove(0);
-    cart.read_header();
-    let cart = &cart;
+    let cart = &slot_store::scan(root).expect("scan").remove(0);
     (
         slot_ui::cart_face(cart).rgba,
         cart.code.clone(),
@@ -121,6 +144,20 @@ fn assert_same_as_slot(label: &[u8]) {
             ),
             "face differs from slot's in {dir} with code {code:?} and header {gb:?}"
         );
+    }
+    // A SNES cart in the usual grey, and one slot's table puts in black, each with and without
+    // a copier header in front of the rom.
+    for title in ["PROBE CART", "KILLER INSTINCT"] {
+        for copier in [false, true] {
+            let d = snes_card(title, copier, label);
+            let (want, _, stem) = slot_face(d.path());
+            let head = head(d.path());
+            assert_eq!(head.len(), 0x20, "the studio did not find {title}'s header");
+            assert!(
+                want == face::from_png(label, face::platform_of("SNES"), "", &head, "", &stem),
+                "face differs from slot's for SNES {title:?} (copier header {copier})"
+            );
+        }
     }
 }
 

@@ -12,6 +12,7 @@ import init, {
   layered_cart_shells,
   cart_size,
   clean_label,
+  crc_skip,
   existing_face,
   fallback_hue,
   header_code,
@@ -20,6 +21,8 @@ import init, {
   merge_cart_shells,
   shell_key_ok,
   shell_presets,
+  snes_head,
+  snes_head_read,
   stop_colours,
   stub_target,
   thumbnail_name,
@@ -35,6 +38,7 @@ import { applyFill, autoFill, available, fillCounts, fillText, wears } from './l
 const $ = (id) => document.getElementById(id);
 const limit = limiter(4);
 // The GBA game code sits at 0xAC and the Game Boy header ends at 0x150; nothing past that is read.
+// A SNES header sits much further in, so a SNES rom is read as far as `snes_head_read` says.
 const HEAD = 0x150;
 const FATAL = 'The studio ran out of memory or hit an internal error. Reload the page to start again.';
 const BUILD = 'dev';
@@ -68,7 +72,8 @@ function newCart({ platform, stem, file }) {
     stem,
     file,
     code: '',
-    // A Game Boy pak's header, which picks its shell and plastic. Empty on a GBA cart.
+    // A Game Boy pak's header, or a SNES pak's internal one, which picks its shell and plastic.
+    // Empty on a GBA cart.
     head: new Uint8Array(0),
     shell: '',
     shellOnCard: '',
@@ -77,6 +82,11 @@ function newCart({ platform, stem, file }) {
     game: null,
     // Logos stay PNG bytes, which are small. The label made from one is not kept: see withLabel.
     logoBytes: null,
+    // libretro's box art for the matched game, written to Images/ beside the label when the card
+    // has none for this cart. `hasImage` is whether it does.
+    boxBytes: null,
+    hasImage: false,
+    boxResult: null,
     // The real label's ground and band, measured from its scan: sure looks only.
     look: null,
     choice: null,
@@ -169,6 +179,9 @@ const readyCarts = () =>
   session ? session.carts.filter((c) => stateOf(c) === 'ready' && c.result !== 'skipped') : [];
 
 const shellChanges = () => (session ? session.carts.filter((c) => c.shell !== c.shellOnCard) : []);
+// Box art is written only where the card has none, and only while the box is ticked.
+const boxless = () => (session ? session.carts.filter((c) => c.boxBytes && !c.hasImage && c.boxResult == null) : []);
+const boxCarts = () => ($('write-boxes').checked ? boxless() : []);
 // Into the Labels layer.
 const mergedShells = (s, carts, values) =>
   merge_cart_shells(
@@ -537,9 +550,10 @@ async function open(source) {
   track(identify(session));
 }
 
-async function crcOf(file) {
+// No-Intro hashes a SNES dump without the copier header some carry, so that is skipped first.
+async function crcOf(file, platform) {
   const crc = new Crc32();
-  const reader = file.stream().getReader();
+  const reader = file.slice(crc_skip(platform, file.size)).stream().getReader();
   for (;;) {
     const { done, value } = await reader.read();
     if (done) return crc.finish();
@@ -579,11 +593,14 @@ async function identify(s) {
     progress(i, total, c.stem);
     try {
       const file = await c.file();
-      const head = new Uint8Array(await file.slice(0, HEAD).arrayBuffer());
+      const snes = c.platform === 'SNES';
+      const head = new Uint8Array(await file.slice(0, snes ? snes_head_read() : HEAD).arrayBuffer());
       // Only a GBA rom carries a game code. On a Game Boy cart 0xAC is inside the RST vectors,
       // so a code read from there is opcode bytes dressed up as one.
       c.code = c.platform === 'GBA' ? header_code(head) : '';
-      if (c.platform !== 'GBA') c.head = head;
+      if (snes) c.head = snes_head(head, file.size);
+      else if (c.platform !== 'GBA') c.head = head;
+      c.hasImage = s.source.images.has(labelKey(c.platform, c.stem));
       const label = s.source.labels.get(labelKey(c.platform, c.stem));
       if (label) {
         const bytes = new Uint8Array(await (await label()).arrayBuffer());
@@ -591,8 +608,10 @@ async function identify(s) {
         c.choice = 'card';
         c.existing = existing_face(bytes, c.platform, c.code, c.head, c.shell, c.stem);
         c.looking = false;
+        // A labelled cart is still matched when it has no box art, so it can be given some.
+        if (!c.hasImage) c.crc = await crcOf(file, c.platform);
       } else {
-        c.crc = await crcOf(file);
+        c.crc = await crcOf(file, c.platform);
       }
     } catch (e) {
       if (trapped(e)) return;
@@ -637,7 +656,9 @@ async function match(s) {
     $('banner').hidden = true;
   }
   const pending = s.carts.filter((c) => c.crc !== null && !c.game && !c.existing && !c.error);
-  await Promise.all(pending.map((c) => art(s, c)));
+  // Carts that keep the label they have but have no box art: matched for the box alone.
+  const boxless = s.carts.filter((c) => c.crc !== null && !c.game && c.existing && !c.hasImage && !c.error);
+  await Promise.all([...pending.map((c) => art(s, c)), ...boxless.map((c) => boxOnly(s, c))]);
   if (s === session && !fatal && s.fill == null) await fillOrAsk(s);
 }
 
@@ -653,6 +674,17 @@ async function art(s, c) {
   }
   c.looking = false;
   paint(c);
+}
+
+async function boxOnly(s, c) {
+  c.game = dats.get(c.platform)?.game_for(c.crc) ?? null;
+  if (!c.game) return;
+  const box = await limit(async () =>
+    s === session && !fatal ? fetchThumb(c.platform, 'Named_Boxarts', thumbnail_name(c.game), stub_target) : null,
+  ).catch(noImage);
+  if (s !== session || fatal) return;
+  c.boxBytes = box && readable(box) ? box : null;
+  updateWriteBar();
 }
 
 // Where the set files this cart's art: under its own checksum while its game is the one that
@@ -692,7 +724,8 @@ async function dress(s, c) {
   // after the logo.
   const boxJob = thumb('Named_Boxarts');
   if (!c.logoBytes) {
-    const logo = await ours('wheel');
+    // libretro's logos stand in where our own set has none: it has no SNES logos at all.
+    const logo = (await ours('wheel')) ?? (await thumb('Named_Logos'));
     if (s !== session || fatal) return;
     c.logoBytes = logo && readable(logo) ? logo : null;
     // How bright the logo is decides which way its ground goes, so it is measured with the logo.
@@ -701,6 +734,9 @@ async function dress(s, c) {
   const box = await boxJob;
   if (s !== session || fatal) return;
   c.boxHue = box ? (box_hue(box) ?? null) : null;
+  // A game chosen by hand brings its own box, which replaces the one the wrong match brought.
+  c.boxBytes = box && readable(box) ? box : null;
+  c.boxResult = null;
   if (!c.userHue) c.deep = null;
   c.dressed = true;
   if (needsReal(c)) await fetchReal(s, c);
@@ -712,7 +748,7 @@ const platformsOf = (s) => PLATFORMS.filter((p) => s.carts.some((c) => c.platfor
 
 // A tab per platform on the card, with what it holds. One platform is no choice at all, so a
 // card of nothing but GBA carts shows no switcher and reads exactly as it did before.
-const PLATFORM_NAMES = { GBA: 'Game Boy Advance', GB: 'Game Boy', GBC: 'Game Boy Color' };
+const PLATFORM_NAMES = { GBA: 'Game Boy Advance', GB: 'Game Boy', GBC: 'Game Boy Color', SNES: 'Super Nintendo' };
 
 function renderTabs() {
   const s = session;
@@ -741,9 +777,12 @@ function showPlatform(p) {
 
 function updateWriteBar() {
   if (!session) return;
-  const n = readyCarts().length + shellChanges().length;
-  // Nothing to write means no button at all.
-  $('write-bar').hidden = n === 0 && !writing;
+  const n = readyCarts().length + shellChanges().length + boxCarts().length;
+  const boxes = boxless().length;
+  // Nothing to write means no button at all. The box art switch stays while there is box art to
+  // write, ticked or not, so unticking it cannot take it away.
+  $('write-bar').hidden = n === 0 && boxes === 0 && !writing;
+  $('write-boxes').parentElement.hidden = boxes === 0;
   $('write').disabled = n === 0 || writing || fatal;
   $('write').textContent = session.source.direct ? 'Write to card' : 'Download ZIP';
 }
@@ -832,10 +871,11 @@ async function writeLabels() {
   const s = session;
   const carts = readyCarts();
   const shells = shellChanges();
-  if ((!carts.length && !shells.length) || writing || fatal) return;
+  const boxes = boxCarts();
+  if ((!carts.length && !shells.length && !boxes.length) || writing || fatal) return;
   writing = true;
   updateWriteBar();
-  writeProgress(0, carts.length + shells.length);
+  writeProgress(0, carts.length + shells.length + boxes.length);
   try {
     if (s.source.direct) {
       const count = { written: 0, skipped: 0, failed: 0 };
@@ -861,8 +901,28 @@ async function writeLabels() {
           c.byHand = false;
         }
         count[c.result]++;
-        writeProgress(count.written + count.skipped + count.failed, carts.length + shells.length);
+        writeProgress(count.written + count.skipped + count.failed, carts.length + shells.length + boxes.length);
         paint(c);
+      }
+      const boxCount = { written: 0, skipped: 0, failed: 0 };
+      for (const [i, c] of boxes.entries()) {
+        if (fatal) return;
+        let result;
+        try {
+          result = await s.source.writeImage(c.platform, c.stem, c.boxBytes);
+        } catch (e) {
+          if (trapped(e)) return;
+          logError(`Images/${c.platform}/${c.stem}.png`, e);
+          result = 'failed';
+        }
+        // Written, or found there meanwhile: either way the card has box art for this cart now.
+        // A failure leaves it to be tried on the next write.
+        if (result !== 'failed') {
+          c.boxResult = result;
+          c.hasImage = true;
+        }
+        boxCount[result]++;
+        writeProgress(carts.length + i + 1, carts.length + shells.length + boxes.length);
       }
       let shellNote = '';
       if (shells.length) {
@@ -890,6 +950,7 @@ async function writeLabels() {
         const problems = [
           count.failed && `${plural(count.failed, 'label', 'labels')} couldn’t be written.`,
           count.skipped && `${plural(count.skipped, 'label was', 'labels were')} skipped: one turned up on the card meanwhile.`,
+          boxCount.failed && `${plural(boxCount.failed, 'box art image', 'box art images')} couldn’t be written.`,
           shellNote,
         ].filter(Boolean);
         if (problems.length) banner(problems.join(' '));
@@ -901,7 +962,7 @@ async function writeLabels() {
       const parts = [];
       const written = new Set();
       const carried = s.source.labelFiles;
-      const total = carts.length + shells.length + carried.length;
+      const total = carts.length + shells.length + boxes.length + carried.length;
       for (const [i, c] of carts.entries()) {
         writeProgress(i + 1, total);
         const path = `Labels/${c.platform}/${c.stem}.png`;
@@ -912,6 +973,15 @@ async function writeLabels() {
         // give the tab a turn to paint the bar and take input.
         await new Promise((r) => setTimeout(r, 0));
         // A trap elsewhere, or a card replacing this one, can happen while this awaits.
+        if (fatal || s !== session) return;
+      }
+      for (const [i, c] of boxes.entries()) {
+        writeProgress(carts.length + i + 1, total);
+        const path = `Images/${c.platform}/${c.stem}.png`;
+        zip.add(path, c.boxBytes);
+        parts.push(zip.take());
+        written.add(pathKey(path));
+        await new Promise((r) => setTimeout(r, 0));
         if (fatal || s !== session) return;
       }
       let shellNote = '';
@@ -933,7 +1003,7 @@ async function writeLabels() {
       }
       let unread = 0;
       for (const [i, f] of carried.entries()) {
-        writeProgress(carts.length + shells.length + i + 1, total);
+        writeProgress(carts.length + shells.length + boxes.length + i + 1, total);
         if (written.has(pathKey(f.path))) continue;
         try {
           zip.add(f.path, new Uint8Array(await (await f.file()).arrayBuffer()));
@@ -949,7 +1019,7 @@ async function writeLabels() {
       download(new Blob(parts, { type: 'application/zip' }), 'labels.zip');
       const unreadNote =
         unread > 0 &&
-        `${unread === 1 ? '1 file' : `${unread} files`} in the card’s Labels folder couldn’t be read and aren’t in the zip. Merge it into the card’s Labels folder rather than replacing it.`;
+        `${unread === 1 ? '1 file' : `${unread} files`} in the card’s Labels or Images folder couldn’t be read and aren’t in the zip. Merge it into the card rather than replacing its folders.`;
       const notes = [shellNote, unreadNote].filter(Boolean);
       if (s === session && notes.length) banner(notes.join(' '));
     }
@@ -987,7 +1057,7 @@ function shellOf(c) {
 async function lookUp(s, c) {
   paint(c);
   try {
-    if (c.crc === null) c.crc = await crcOf(await c.file());
+    if (c.crc === null) c.crc = await crcOf(await c.file(), c.platform);
     if (!dats.has(c.platform)) dats.set(c.platform, Dat.parse(await fetchDat(c.platform)));
     if (s !== session || fatal) return;
     c.game = dats.get(c.platform).game_for(c.crc) ?? null;
@@ -1090,6 +1160,20 @@ async function start() {
       banner(`The art set at ${ART_BASE} didn’t load (${e.message}), so carts get slot’s own labels.`);
     }
   }
+  // Whether box art goes with the labels, remembered for the next card.
+  try {
+    $('write-boxes').checked = localStorage.getItem('studio:write-boxes') !== 'no';
+  } catch {
+    // No storage, as in a private window: the box stays ticked.
+  }
+  $('write-boxes').addEventListener('change', () => {
+    try {
+      localStorage.setItem('studio:write-boxes', $('write-boxes').checked ? 'yes' : 'no');
+    } catch {
+      // Remembering it is a convenience; the choice still holds for this card.
+    }
+    updateWriteBar();
+  });
   const direct = 'showDirectoryPicker' in window;
   $('pick').hidden = !direct;
   $('pick-files-label').hidden = direct;
@@ -1176,7 +1260,7 @@ $('build').append(
   BUILD === 'dev'
     ? 'dev'
     : Object.assign(document.createElement('a'), {
-        href: `https://github.com/BrandonKowalski/slot-cart-studio/commit/${BUILD}`,
+        href: `https://github.com/savethefails/slot-cart-studio-snes-boxart/commit/${BUILD}`,
         textContent: BUILD.slice(0, 7),
       }),
 );
