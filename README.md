@@ -26,8 +26,8 @@ it, so `tools/scrape.py` does it on your machine instead. Point it at a folder: 
 one system's folder like `Games/SNES`, or any folder of roms. Only the roms in that folder are
 looked up, at one API call each:
 
-    SS_DEVID=... SS_DEVPASSWORD=... SS_SSID=... SS_SSPASSWORD=... \
-        python3 tools/scrape.py /Volumes/SLOT
+    cp .env.example .env    # then fill in the four values
+    python3 tools/scrape.py /Volumes/SLOT
 
 | Kind | Written to |
 | --- | --- |
@@ -42,8 +42,9 @@ looked up, at one API call each:
   - `--platform SNES` limits the systems.
   - `--out DIR` writes somewhere other than the folder itself.
   - `--dry-run` lists what would be fetched without spending quota.
-- **Account:** you need a [ScreenScraper](https://www.screenscraper.fr/) developer id and
-  password, plus your own user login. The script stays inside that account's daily quota, and
+- **Account:** `.env` holds a [ScreenScraper](https://www.screenscraper.fr/) developer id and
+  password plus your own user login. The scripts read it themselves, and git ignores it. A
+  variable already set in your shell takes precedence over the file. The script stays inside that account's daily quota, and
   a later run carries on from where it stopped.
 
 ## Building

@@ -56,5 +56,40 @@ class Redo(unittest.TestCase):
         self.assertEqual(harvest.todo_for('AAAA0000', ['wheel', 'look'], index, root, relook=False, redo=True), ['wheel', 'look'])
 
 
+class Env(unittest.TestCase):
+    def test_a_dotenv_file_reads_the_way_a_shell_would(self):
+        text = (
+            '# comment\n'
+            '\n'
+            'SS_DEVID=abc\n'
+            'export SS_DEVPASSWORD="p#ss word"\n'
+            "SS_SSID='me'\n"
+            'SS_SSPASSWORD=secret # trailing note\n'
+            'not a pair\n'
+            'SS_SOFTNAME=\n'
+        )
+        self.assertEqual(harvest.parse_env(text), {
+            'SS_DEVID': 'abc',
+            'SS_DEVPASSWORD': 'p#ss word',
+            'SS_SSID': 'me',
+            'SS_SSPASSWORD': 'secret',
+            'SS_SOFTNAME': '',
+        })
+
+    def test_the_environment_wins_over_the_file(self):
+        import os
+        env = Path(tempfile.mkdtemp()) / '.env'
+        env.write_text('SS_TEST_A=file\nSS_TEST_B=file\n')
+        os.environ['SS_TEST_A'] = 'shell'
+        os.environ.pop('SS_TEST_B', None)
+        try:
+            self.assertEqual(harvest.load_env([Path('/nonexistent/.env'), env]), env)
+            self.assertEqual(os.environ['SS_TEST_A'], 'shell')
+            self.assertEqual(os.environ['SS_TEST_B'], 'file')
+        finally:
+            os.environ.pop('SS_TEST_A', None)
+            os.environ.pop('SS_TEST_B', None)
+
+
 if __name__ == '__main__':
     unittest.main()

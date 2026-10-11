@@ -93,10 +93,50 @@ def regions_for(name):
     return tuple(dict.fromkeys(first + list(REGIONS)))
 
 
+# Credentials can sit in a .env file at the repository's root (or the folder the command runs
+# from) instead of being exported by hand. .gitignore refuses .env, so they cannot be committed.
+ENV_FILES = (Path.cwd() / '.env', Path(__file__).resolve().parent.parent / '.env')
+
+
+def parse_env(text):
+    """KEY=VALUE per line; `export ` in front, quotes around the value, blank lines and # comments
+    are all allowed, so the same file can also be `source`d by a shell."""
+    out = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if line.startswith('export '):
+            line = line[len('export '):].lstrip()
+        key, sep, value = line.partition('=')
+        key, value = key.strip(), value.strip()
+        if not sep or not key:
+            continue
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in '\'"':
+            value = value[1:-1]
+        else:
+            value = value.split(' #', 1)[0].rstrip()
+        out[key] = value
+    return out
+
+
+def load_env(paths=ENV_FILES):
+    """Fill the environment from the first .env found. A variable already set wins, so a one-off
+    `SS_SSID=other tools/scrape.py ...` still overrides the file."""
+    for path in dict.fromkeys(paths):
+        if path.is_file():
+            for key, value in parse_env(path.read_text()).items():
+                os.environ.setdefault(key, value)
+            return path
+    return None
+
+
 def creds():
+    load_env()
     missing = [k for k in ('SS_DEVID', 'SS_DEVPASSWORD') if not os.environ.get(k)]
     if missing:
-        sys.exit(f'set {" and ".join(missing)} in the environment')
+        sys.exit(f'set {" and ".join(missing)} in .env at the repository root (see .env.example) '
+                 'or in the environment')
     c = {
         'devid': os.environ['SS_DEVID'],
         'devpassword': os.environ['SS_DEVPASSWORD'],
