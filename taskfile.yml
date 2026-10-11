@@ -28,7 +28,7 @@ tasks:
     cmds:
       - cargo test
       - node --test web/*.test.mjs
-      - cd tools && python3 -m unittest test_harvest test_scrape test_look
+      - cd tools && python3 -m unittest test_harvest test_scrape test_pace test_look
 
   check:
     desc: Formatting, clippy for both targets, and the tests
@@ -38,7 +38,7 @@ tasks:
       - cargo clippy --lib --target wasm32-unknown-unknown -- -D warnings
       - cargo test
       - node --test web/*.test.mjs
-      - cd tools && python3 -m unittest test_harvest test_scrape test_look
+      - cd tools && python3 -m unittest test_harvest test_scrape test_pace test_look
 
   slot:pin-check:
     desc: Say whether ../slot's cart face still matches the commit in slot.ref

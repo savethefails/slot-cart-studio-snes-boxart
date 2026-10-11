@@ -3,7 +3,9 @@
 
 The studio in the browser can only reach libretro, which has 2D box fronts and no label scans.
 ScreenScraper has all three, but wants credentials and sends no CORS headers, so this runs
-locally instead, with the same credentials and quota handling as harvest.py:
+locally instead, with the same credentials and quota handling as harvest.py: every request,
+image downloads included, is spaced to the account's per-minute rate and counted against its day,
+and ScreenScraper asking it to slow down or stop is obeyed rather than retried around.
 
     SS_DEVID=... SS_DEVPASSWORD=... SS_SSID=... SS_SSPASSWORD=... \\
         tools/scrape.py /Volumes/SLOT
@@ -27,7 +29,6 @@ The images are ScreenScraper's (CC BY-NC-SA 4.0) and stay on your machine.
 
 import argparse
 import sys
-import time
 from pathlib import Path
 
 import harvest
@@ -112,70 +113,70 @@ def main():
         return
 
     c = harvest.creds()
-    ids = harvest.check_systems(c)
-    q = harvest.quota(c)
-    left = None if q['per_day'] is None else max(0, q['per_day'] - q['today'])
-    if left == 0:
-        sys.exit('the day\'s quota is already spent; run again tomorrow and it will carry on')
-    pause = 60.0 / q['per_min'] if q['per_min'] else 1.0
-    print(f'{left if left is not None else "unknown"} calls left today')
+    try:
+        ids = harvest.check_systems(c)
+        # From here on every request, image downloads included, goes through harvest's shared
+        # pace: spaced to the account's per-minute rate and counted against what is left today.
+        harvest.pace(harvest.quota(c))
+    except (harvest.QuotaSpent, harvest.Refused) as e:
+        sys.exit(f'stopped: {e}')
 
-    files = asked = unmatched = 0
+    def image(m):
+        """One media file as PNG, or None. A quota or refusal stops the run; anything else only
+        loses this one file."""
+        if not m:
+            return None
+        try:
+            return harvest.as_png(harvest.fetch(m['url']))
+        except (harvest.QuotaSpent, harvest.Refused):
+            raise
+        except Exception:
+            return None
+
+    files = looked = unmatched = 0
     try:
         for platform, rom, dests in todo:
-            if left is not None and asked >= left:
-                print('the day\'s quota is spent; run again tomorrow to carry on')
-                break
-            asked += 1
             params = dict(c, crc=harvest.crc32(rom), systemeid=ids[platform], romnom=rom.name,
                           romtaille=str(rom.stat().st_size - harvest.crc_skip(rom)))
             try:
                 data = harvest.call('jeuInfos.php', params)
-            except harvest.QuotaSpent:
+            except (harvest.QuotaSpent, harvest.Refused):
                 raise
             except Exception as e:  # one bad rom must not take the run down with it
-                print(f'  {platform}/{rom.stem}: {type(e).__name__}')
+                print(f'  {platform}/{rom.stem}: {e}')
                 continue
+            looked += 1
             jeu = (data or {}).get('response', {}).get('jeu')
             if not jeu:
                 unmatched += 1
                 print(f'  {platform}/{rom.stem}: not known to ScreenScraper')
-                time.sleep(pause)
                 continue
             medias = jeu.get('medias', [])
             regions = harvest.regions_for(rom.name)
             got = {}
             for kind in dests:
-                m = harvest.pick(medias, KINDS[kind][0], regions)
-                try:
-                    body = harvest.as_png(harvest.fetch(m['url'])) if m else None
-                except Exception:
-                    body = None
+                body = image(harvest.pick(medias, KINDS[kind][0], regions))
                 if harvest.save(body, dests[kind]):
                     got[kind] = body
+                    files += 1
             # No 3D box: the 2D one stands in where the shelf looks, unless something is there.
             main_box = Path(out) / KINDS['box-3D'][1](platform, rom.stem)
             if 'box-3D' in kinds and 'box-3D' not in got and not main_box.exists():
                 flat = got.get('box-2D')
                 if flat is None and 'box-2D' not in kinds:
-                    m = harvest.pick(medias, 'box-2D', regions)
-                    try:
-                        flat = harvest.as_png(harvest.fetch(m['url'])) if m else None
-                    except Exception:
-                        flat = None
+                    flat = image(harvest.pick(medias, 'box-2D', regions))
                 if harvest.save(flat, main_box):
                     got['box-2D in place of box-3D'] = flat
-            files += len(got)
+                    files += 1
             wanted = ', '.join(dests)
             print(f'  {platform}/{rom.stem}: {", ".join(got) or "nothing"}'
-                  + ('' if set(dests) <= set(got) else f' (wanted {wanted})'))
-            time.sleep(pause)
-    except harvest.QuotaSpent as e:
-        print(f'\nstopped: {e}')
+                  + ('' if set(dests) <= set(got) else f' (wanted {wanted})'), flush=True)
+    except (harvest.QuotaSpent, harvest.Refused) as e:
+        print(f'\nstopped: {e}. Run again later and it carries on from here.')
     except KeyboardInterrupt:
         print('\nstopped by hand')
-    print(f'\n{files} files written, {unmatched} roms ScreenScraper did not know, {asked} api calls')
-
+    print(f'\n{files} files written for {looked} roms looked up, {unmatched} of them unknown to '
+          f'ScreenScraper; {harvest.PACE.used} requests this run')
 
 if __name__ == '__main__':
     main()

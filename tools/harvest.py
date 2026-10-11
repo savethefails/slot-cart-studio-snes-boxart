@@ -151,36 +151,127 @@ def creds():
     return c
 
 
-def call(endpoint, params, tries=4):
-    """One API call, backing off rather than hammering a service that limits by design."""
+class QuotaSpent(Exception):
+    pass
+
+
+class Refused(Exception):
+    """ScreenScraper turned the run away as a whole: credentials wrong, the API closed or
+    overloaded, or the software blocked. Retrying would only add load, so the run stops."""
+
+
+# ScreenScraper's own answers, from its API documentation. 404 is "not known", an answer.
+QUOTA_CODES = {
+    430: 'the day\'s request quota is spent',
+    431: 'the day\'s quota of roms it did not recognise is spent',
+}
+REFUSED_CODES = {
+    401: 'the API is closed to non-members for now (server overloaded); try again later',
+    403: 'the developer id or password was refused; check .env',
+    423: 'the API is closed for now; try again later',
+    426: 'this software name has been blocked or is out of date',
+}
+# Below the account's stated rate rather than at it, so clock drift on either side cannot tip a
+# run over the line.
+MARGIN = 1.2
+
+
+class Pace:
+    """Every request to ScreenScraper waits its turn here: API calls and image downloads alike,
+    across every thread. Requests are spaced to the account's per-minute rate and counted against
+    what is left of its day, so a run stops on its own before ScreenScraper has to stop it."""
+
+    def __init__(self, per_min=None, day_left=None):
+        # Until the account's limits are known, one request a second.
+        self.gap = MARGIN * 60.0 / per_min if per_min else 1.0
+        self.day_left = day_left
+        self.used = 0
+        self.next_at = 0.0
+        self.lock = threading.Lock()
+
+    def wait(self):
+        with self.lock:
+            if self.day_left is not None and self.used >= self.day_left:
+                raise QuotaSpent('the day\'s request quota is spent')
+            now = time.monotonic()
+            at = max(now, self.next_at)
+            self.next_at = at + self.gap
+            self.used += 1
+        if at > now:
+            time.sleep(at - now)
+
+    def hold(self, seconds):
+        """Nothing goes out for `seconds`, on any thread: ScreenScraper asked for room."""
+        with self.lock:
+            self.next_at = max(self.next_at, time.monotonic() + seconds)
+
+
+PACE = Pace()
+
+
+def pace(q):
+    """Pace every later request to the limits `quota` read, and say what they are."""
+    global PACE
+    left = None if q['per_day'] is None else max(0, q['per_day'] - q['today'])
+    PACE = Pace(q['per_min'], left)
+    print(f"quota: {q['today']} of {q['per_day'] or '?'} requests used today, "
+          f"{q['per_min'] or '?'} a minute allowed, so one every {PACE.gap:.1f}s; "
+          f"{q['ko_today']} of {q['ko_per_day'] or '?'} unrecognised roms today", flush=True)
+    if left == 0:
+        sys.exit('the day\'s quota is already spent; run again tomorrow and it will carry on')
+    return left
+
+
+def request(url, tries=4, timeout=60):
+    """One paced GET to ScreenScraper. The body, or None for a 404.
+
+    A 429 (too fast, or too many threads) backs off for as long as the reply's Retry-After says,
+    or longer each time, and holds every other thread back with it. Quota codes raise QuotaSpent
+    and refusals raise Refused; neither is retried. A dropped connection is retried a few times.
+    """
     for attempt in range(tries):
-        url = f'{API}/{endpoint}?' + urllib.parse.urlencode(params)
+        PACE.wait()
         try:
-            with urllib.request.urlopen(url, timeout=60) as r:
-                return json.loads(r.read().decode('utf-8', 'replace'))
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                return r.read()
         except urllib.error.HTTPError as e:
-            # 404 means this rom is not known, which is an answer rather than a failure. 429 is the
-            # documented rate limit and 430/431 their quota codes.
             if e.code == 404:
                 return None
-            if e.code in (429, 430, 431):
-                if e.code != 429:
-                    raise QuotaSpent(f'ScreenScraper says the quota is spent (HTTP {e.code})')
-                if attempt < tries - 1:
-                    wait = 20 * (attempt + 1)
-                    print(f'    rate limited, waiting {wait}s', flush=True)
-                    time.sleep(wait)
-                    continue
+            if e.code in QUOTA_CODES:
+                raise QuotaSpent(f'ScreenScraper says {QUOTA_CODES[e.code]} (HTTP {e.code})')
+            if e.code in REFUSED_CODES:
+                raise Refused(f'ScreenScraper says {REFUSED_CODES[e.code]} (HTTP {e.code})')
+            if e.code == 429 and attempt < tries - 1:
+                wait = retry_after(e) or 30 * (attempt + 1)
+                print(f'    asked to slow down, waiting {wait}s', flush=True)
+                PACE.hold(wait)
+                continue
             raise
-        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError):
             if attempt == tries - 1:
                 raise
-            time.sleep(5 * (attempt + 1))
+            PACE.hold(5 * (attempt + 1))
     return None
 
 
-class QuotaSpent(Exception):
-    pass
+def retry_after(e):
+    try:
+        return max(0, int(e.headers.get('Retry-After', '')))
+    except (TypeError, ValueError):
+        return None
+
+
+def call(endpoint, params, tries=4):
+    """One API call's JSON, or None when ScreenScraper does not know the rom."""
+    body = request(f'{API}/{endpoint}?' + urllib.parse.urlencode(params), tries)
+    if body is None:
+        return None
+    try:
+        return json.loads(body.decode('utf-8', 'replace'))
+    except json.JSONDecodeError:
+        # ScreenScraper answers some errors with a plain-text page and a 200.
+        text = body.decode('utf-8', 'replace').strip()[:200]
+        raise RuntimeError(f'ScreenScraper sent no JSON: {text}')
 
 
 def quota(c):
@@ -201,6 +292,8 @@ def quota(c):
         'per_day': num('maxrequestsperday', 'maxrequestsparjour'),
         'today': num('requeststoday', 'requestsdone') or 0,
         'threads': num('maxthreads') or 1,
+        'ko_per_day': num('maxrequestskoperday'),
+        'ko_today': num('requestskotoday') or 0,
     }
 
 
@@ -272,10 +365,11 @@ def pick(medias, want, regions=REGIONS):
 
 
 def fetch(url):
-    with urllib.request.urlopen(url, timeout=120) as r:
-        body = r.read()
+    """A media file. ScreenScraper serves these through its API, so they are paced and counted
+    like any other request."""
+    body = request(url, timeout=120)
     # A truncated or error body is not an image, and a broken file on the card is worse than none.
-    return body if len(body) >= 256 else None
+    return body if body and len(body) >= 256 else None
 
 
 def as_png(body):
@@ -374,13 +468,7 @@ def main():
         sys.exit('--out plus one of --card or --dat is needed (or --probe)')
 
     q = quota(c)
-    left = None if q['per_day'] is None else max(0, q['per_day'] - q['today'])
-    print(f"quota: {q['today']} used today of {q['per_day'] or '?'}, "
-          f"{q['per_min'] or '?'} a minute, {q['threads']} thread(s)")
-    if left == 0:
-        sys.exit('the day\'s quota is already spent; run again tomorrow and it will resume')
-    # Their limit is per minute, so pace to it rather than racing into a 429.
-    pause = 60.0 / q['per_min'] if q['per_min'] else 1.0
+    pace(q)
 
     wanted = [m.strip() for m in args.media.split(',') if m.strip()]
     if 'look' in wanted:
@@ -392,10 +480,10 @@ def main():
     index_path = Path(args.out) / 'index.json'
     index = json.loads(index_path.read_text()) if index_path.exists() else {}
 
-    # The account's own thread allowance, which is what ScreenScraper polices. Pacing is per
-    # thread, so the total stays inside the per-minute limit however many are running.
+    # The account's own thread allowance, which is what ScreenScraper polices. Every request
+    # waits on the one shared pace, so the total stays inside the per-minute limit however many
+    # threads are running.
     threads = max(1, min(q['threads'] or 1, 6))
-    pause = threads * pause
     print(f'{threads} worker(s)')
 
     lock = threading.Lock()
@@ -417,7 +505,7 @@ def main():
                 n['skipped'] += 1
             return
         with lock:
-            if (left is not None and n['asked'] >= left) or (args.limit and n['asked'] >= args.limit):
+            if args.limit and n['asked'] >= args.limit:
                 stop.set()
                 return
             n['asked'] += 1
@@ -426,7 +514,9 @@ def main():
             params['romtaille'] = str(size)
         try:
             data = call('jeuInfos.php', params)
-        except QuotaSpent:
+        except (QuotaSpent, Refused) as e:
+            if not stop.is_set():
+                print(f'\nstopped: {e}', flush=True)
             stop.set()
             return
         except Exception as e:  # one bad game must not take the run down with it
@@ -440,6 +530,14 @@ def main():
             m = pick(medias, SOURCE.get(want, want), regions)
             try:
                 body = fetch(m['url']) if m else None
+            except (QuotaSpent, Refused) as e:
+                if not stop.is_set():
+                    print(f'\nstopped: {e}', flush=True)
+                stop.set()
+                break
+            except Exception:
+                continue
+            try:
                 if want == 'look':
                     measured = look.measure_look(body) if body else None
                     if measured:
@@ -459,7 +557,6 @@ def main():
             n['done'] += 1
             if n['done'] % 50 == 0:
                 print(f"  ... {n['done']} done, {n['saved']} files, {n['missed']} without art", flush=True)
-        time.sleep(pause)
 
     try:
         chosen = list(PLATFORMS) if args.dat == 'all' else ([args.dat] if args.dat else list(PLATFORMS))

@@ -46,6 +46,11 @@ looked up, at one API call each:
   password plus your own user login. The scripts read it themselves, and git ignores it. A
   variable already set in your shell takes precedence over the file. The script stays inside that account's daily quota, and
   a later run carries on from where it stopped.
+- **Rate limits:** every request goes through one shared pacer, image downloads included. It
+  spaces requests 20% below your account's per-minute rate and counts them against what's left
+  of the day. If ScreenScraper asks it to slow down (HTTP 429), it waits as long as the reply's
+  `Retry-After` says. If it says the quota is spent or the API is closed, the run stops instead
+  of retrying.
 
 ## Building
 
